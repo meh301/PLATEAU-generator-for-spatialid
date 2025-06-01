@@ -69,3 +69,29 @@ def build_output_paths(grid: grids.Grid, input_dir: str, input_files: str,
         output_file = os.path.join(output_dir, output_file_rel)
         output_files.append(output_file)
     return output_files
+
+
+def consolidate_output_parts(output_root_dir: str) -> None:
+    """Merge CSV part files (e.g., *_part0.csv, *_part1.csv) into one clean file per original GML."""
+    for dirpath, _, filenames in os.walk(output_root_dir):
+        part_files = {}
+        for filename in filenames:
+            if "_part" in filename and filename.endswith(".csv"):
+                base_name = filename.split("_part")[0] + ".csv"
+                full_path = os.path.join(dirpath, filename)
+                part_files.setdefault(base_name, []).append(full_path)
+
+        for final_name, parts in part_files.items():
+            parts.sort()  # ensure deterministic order
+            final_path = os.path.join(dirpath, final_name)
+
+            with open(final_path, 'w', encoding='utf-8') as fout:
+                for i, part in enumerate(parts):
+                    with open(part, 'r', encoding='utf-8') as fin:
+                        lines = fin.readlines()
+                        if i == 0:
+                            fout.writelines(lines)
+                        else:
+                            fout.writelines(lines[3:])  # skip metadata/header rows
+                    os.remove(part)  # cleanup
+            print(f"Consolidated parts into {final_path}")

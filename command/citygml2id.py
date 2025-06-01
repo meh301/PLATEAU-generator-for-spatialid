@@ -7,6 +7,9 @@ import grids
 import inputs
 import outputs
 
+from concurrent.futures import ProcessPoolExecutor
+from functools import partial
+
 Any = typing.Any
 Dict = typing.Dict
 List = typing.List
@@ -16,49 +19,54 @@ Iterator = typing.Iterator
 logger = logging.getLogger(__name__)
 
 
-def main(input_file_or_dir: str, output_file_or_dir: str, lod: int,
-         grid_type: str, grid_level: int, grid_size: List[float], grid_crs: int,
-         ids: Tuple[str], extract: bool = False, extrude: List[float] = [],
-         interpolate: bool = False, merge: bool = False, debug: bool = False
-         ) -> None:
-    """CityGML 2 ID pair list
-
-    Args:
-        input_file_or_dir (str): path to the CityGML file (*.gml) or directory
-        output_file_or_dir (str): path to the ID pair list file (*.csv) or directory
-        lod (int): maximum LOD of target geometries
-        grid_type (str): type of the output voxel grid
-        grid_level (int): zoom level of the output voxel grid
-        grid_size (List[float]): size of the output voxel grid
-        grid_crs (int): coordinate reference system of the output voxel grid
-        ids (Tuple[str]): gml:ids which will be filtered
-        extract (bool, optional): whether extract spatial ids from CityGML or not. Defaults to False.
-        extrude (List[float], optional): min extrude and max extrude (unit: m). Defaults to [].
-        interpolate (bool, optional): whether interpolate inner voxels of solids or not. Defaults to False.
-        merge (bool, optional): whether merge 8 adjacent voxels into 1 large voxel or not. Defaults to False.
-        debug (bool, optional): whether output debug messages and retain temporary files or not. Defaults to False.
-
-    Raises:
-        ValueError: Invalid parameters
-    """
-    extrude = extrude or []
-    if extrude and len(extrude) != 2:
-        raise ValueError(f'Invalid extrude: {extrude}')
-
-    # grid
+def _process_file(input_file, output_file, lod, grid_type, grid_level, grid_size, grid_crs,
+                  ids, extract, extrude, interpolate, merge, debug):
     grid = grids.get(
         grid_type,
         level=grid_level,
         size=grid_size,
         crs=grid_crs
     )
+    grid.clear()
+    if extract:
+        xml2id(
+            input_file, output_file, lod, grid, ids,
+            extrude=extrude, interpolate=interpolate,
+            merge=merge, debug=debug
+        )
+    else:
+        geom2id(
+            input_file, output_file, lod, grid, ids,
+            interpolate=interpolate, merge=merge, debug=debug
+        )
 
-    # batch
+def _safe_process_file(args):
+    input_file, output_file, kwargs = args
+    try:
+        _process_file(input_file, output_file, **kwargs)
+    except Exception as e:
+        print(f"[ERROR] Failed on {input_file} -> {output_file}")
+        import traceback
+        traceback.print_exc()
+
+
+def main(input_file_or_dir: str, output_file_or_dir: str, lod: int,
+         grid_type: str, grid_level: int, grid_size: List[float], grid_crs: int,
+         ids: Tuple[str], extract: bool = False, extrude: List[float] = [],
+         interpolate: bool = False, merge: bool = False, debug: bool = False
+         ) -> None:
+    extrude = extrude or []
+    if extrude and len(extrude) != 2:
+        raise ValueError(f'Invalid extrude: {extrude}')
+
+    # Ensure ids is never None
+    ids = ids or ()
+
     output_ext = os.path.splitext(output_file_or_dir)[-1]
     if os.path.isdir(input_file_or_dir) and output_ext == '':
         input_files = inputs.get_target_gml_files(input_file_or_dir)
         output_files = outputs.build_output_paths(
-            grid,
+            grids.get(grid_type, level=grid_level, size=grid_size, crs=grid_crs),
             input_file_or_dir,
             input_files,
             output_file_or_dir,
@@ -70,111 +78,64 @@ def main(input_file_or_dir: str, output_file_or_dir: str, lod: int,
     else:
         raise ValueError(f'Invalid path: {input_file_or_dir} {output_file_or_dir}')
 
-    # main
-    for input_file, output_file in zip(input_files, output_files):
-        grid.clear()
-        if extract:
-            xml2id(
-                input_file,
-                output_file,
-                lod,
-                grid,
-                ids,
-                extrude=extrude,
-                interpolate=interpolate,
-                merge=merge,
-                debug=debug
-            )
-        else:
-            geom2id(
-                input_file,
-                output_file,
-                lod,
-                grid,
-                ids,
-                interpolate=interpolate,
-                merge=merge,
-                debug=debug
-            )
+    process_func = partial(
+        _process_file,
+        lod=lod,
+        grid_type=grid_type,
+        grid_level=grid_level,
+        grid_size=grid_size,
+        grid_crs=grid_crs,
+        ids=ids,
+        extract=extract,
+        extrude=extrude,
+        interpolate=interpolate,
+        merge=merge,
+        debug=debug
+    )
+
+    with ProcessPoolExecutor() as executor:
+        kwargs = dict(
+        lod=lod,
+        grid_type=grid_type,
+        grid_level=grid_level,
+        grid_size=grid_size,
+        grid_crs=grid_crs,
+        ids=ids,
+        extract=extract,
+        extrude=extrude,
+        interpolate=interpolate,
+        merge=merge,
+        debug=debug
+    )
+
+    task_args = [(inp, outp, kwargs) for inp, outp in zip(input_files, output_files)]
+
+    print(f"[INFO] Launching {len(task_args)} parallel tasks...")
+    with ProcessPoolExecutor() as executor:
+        executor.map(_safe_process_file, task_args)
+
+    # Merge CSV parts if they exist
+    print(f"[INFO] Consolidating CSV parts...")
+    outputs.consolidate_output_parts(output_file_or_dir)
 
 
 def xml2id(input_file: str, output_file: str, lod: int, grid: grids.Grid,
            ids: Tuple[str], extrude: List[float] = [], interpolate: bool = False,
            merge: bool = False, debug: bool = False) -> None:
-    """CityGML with spatial IDs 2 ID pair list
-
-    Args:
-        input_file (str): path to the CityGML file (*.gml)
-        output_file (str): path to the ID pair list file (*.csv)
-        lod (int): maximum LOD of target geometries
-        grid (grids.Grid): voxel grid instance
-        ids (Tuple[str]): gml:ids which will be filtered
-        extrude (List[float], optional): min extrude and max extrude (unit: m). Defaults to [].
-        interpolate (bool, optional): whether interpolate inner voxels of solids or not. Defaults to False.
-        merge (bool, optional): whether merge 8 adjacent voxels into 1 large voxel or not. Defaults to False.
-        debug (bool, optional): whether output debug messages and retain temporary files or not. Defaults to False.
-    """
-    xml = inputs.load_xml(
-        input_file
-    )
-
-    # extract ids
-    grid.extract_ids(
-        xml
-    )
-
-    # extrude
+    xml = inputs.load_xml(input_file)
+    grid.extract_ids(xml)
     grid.extrude(*extrude[:2])
-
-    # merge
     if merge:
         grid.merge()
-
-    # output
-    outputs.export_csv(
-        grid,
-        output_file,
-        merge=merge
-    )
+    outputs.export_csv(grid, output_file, merge=merge)
 
 
 def geom2id(input_file: str, output_file: str, lod: int, grid: grids.Grid,
             ids: Tuple[str], interpolate: bool = False, merge: bool = False,
             debug: bool = False) -> None:
-    """CityGML without spatial IDs 2 ID pair list
-
-    Args:
-        input_file (str): path to the CityGML file (*.gml)
-        output_file (str): path to the ID pair list file (*.csv)
-        lod (int): maximum LOD of target geometries
-        grid (grids.Grid): voxel grid instance
-        ids (Tuple[str]): gml:ids which will be filtered
-        interpolate (bool, optional): whether interpolate inner voxels of solids or not. Defaults to False.
-        merge (bool, optional): whether merge 8 adjacent voxels into 1 large voxel or not. Defaults to False.
-        debug (bool, optional): whether output debug messages and retain temporary files or not. Defaults to False.
-    """
-    # input
-    data = inputs.load_features(
-        input_file,
-        ids,
-        lod,
-        grid.crs,
-        debug=debug
-    )
-
-    # build voxel grid
-    grid.load_geom_data(
-        data,
-        interpolate=interpolate,
-        merge=merge
-    )
-
-    # output
-    outputs.export_csv(
-        grid,
-        output_file,
-        merge=merge
-    )
+    data = inputs.load_features(input_file, ids, lod, grid.crs, debug=debug)
+    grid.load_geom_data(data, interpolate=interpolate, merge=merge)
+    outputs.export_csv(grid, output_file, merge=merge)
 
 
 if __name__ == '__main__':

@@ -1,5 +1,7 @@
-numpy
-pyvista
+numpy==1.26.4
+pyvista==0.38.4
+vtk==9.2.6
 lxml
 pyproj
 pygeos
+ifcopenshell
