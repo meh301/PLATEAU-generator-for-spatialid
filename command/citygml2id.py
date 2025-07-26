@@ -16,6 +16,9 @@ List = typing.List
 Tuple = typing.Tuple
 Iterator = typing.Iterator
 
+import multiprocessing
+from concurrent.futures import ProcessPoolExecutor, as_completed
+
 logger = logging.getLogger(__name__)
 
 
@@ -56,11 +59,11 @@ def main(input_file_or_dir: str, output_file_or_dir: str, lod: int,
          interpolate: bool = False, merge: bool = False, debug: bool = False,
          filter_subdirs: typing.Optional[List[str]] = None
          ) -> None:
+
     extrude = extrude or []
     if extrude and len(extrude) != 2:
         raise ValueError(f'Invalid extrude: {extrude}')
 
-    # Ensure ids is never None
     ids = ids or ()
 
     output_ext = os.path.splitext(output_file_or_dir)[-1]
@@ -79,23 +82,7 @@ def main(input_file_or_dir: str, output_file_or_dir: str, lod: int,
     else:
         raise ValueError(f'Invalid path: {input_file_or_dir} {output_file_or_dir}')
 
-    process_func = partial(
-        _process_file,
-        lod=lod,
-        grid_type=grid_type,
-        grid_level=grid_level,
-        grid_size=grid_size,
-        grid_crs=grid_crs,
-        ids=ids,
-        extract=extract,
-        extrude=extrude,
-        interpolate=interpolate,
-        merge=merge,
-        debug=debug
-    )
-
-    with ProcessPoolExecutor() as executor:
-        kwargs = dict(
+    kwargs = dict(
         lod=lod,
         grid_type=grid_type,
         grid_level=grid_level,
@@ -110,12 +97,20 @@ def main(input_file_or_dir: str, output_file_or_dir: str, lod: int,
     )
 
     task_args = [(inp, outp, kwargs) for inp, outp in zip(input_files, output_files)]
+    cpu_count = multiprocessing.cpu_count()
 
-    print(f"[INFO] Launching {len(task_args)} parallel tasks...")
-    with ProcessPoolExecutor() as executor:
-        executor.map(_safe_process_file, task_args)
+    print(f"[INFO] Found {len(task_args)} files. Using {cpu_count} parallel workers.")
+    
+    with ProcessPoolExecutor(max_workers=cpu_count) as executor:
+        futures = [executor.submit(_safe_process_file, args) for args in task_args]
+        
+        for i, future in enumerate(as_completed(futures), 1):
+            try:
+                future.result()
+            except Exception as e:
+                logger.error(f"[ERROR] Task failed: {e}")
+            print(f"[INFO] Completed {i}/{len(task_args)}")
 
-    # Merge CSV parts if they exist
     print(f"[INFO] Consolidating CSV parts...")
     outputs.consolidate_output_parts(output_file_or_dir)
 
