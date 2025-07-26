@@ -53,7 +53,8 @@ def _safe_process_file(args):
 def main(input_file_or_dir: str, output_file_or_dir: str, lod: int,
          grid_type: str, grid_level: int, grid_size: List[float], grid_crs: int,
          ids: Tuple[str], extract: bool = False, extrude: List[float] = [],
-         interpolate: bool = False, merge: bool = False, debug: bool = False
+         interpolate: bool = False, merge: bool = False, debug: bool = False,
+         filter_subdirs: typing.Optional[List[str]] = None
          ) -> None:
     extrude = extrude or []
     if extrude and len(extrude) != 2:
@@ -64,7 +65,7 @@ def main(input_file_or_dir: str, output_file_or_dir: str, lod: int,
 
     output_ext = os.path.splitext(output_file_or_dir)[-1]
     if os.path.isdir(input_file_or_dir) and output_ext == '':
-        input_files = inputs.get_target_gml_files(input_file_or_dir)
+        input_files = inputs.get_target_gml_files(input_file_or_dir, filter_subdirs=filter_subdirs)
         output_files = outputs.build_output_paths(
             grids.get(grid_type, level=grid_level, size=grid_size, crs=grid_crs),
             input_file_or_dir,
@@ -153,6 +154,7 @@ if __name__ == '__main__':
     parser.add_argument('--interpolate', action='store_true', help='whether interpolate inner voxels of solids or not')
     parser.add_argument('--merge', action='store_true', help='whether merge 8 adjacent voxels into 1 large voxel or not')
     parser.add_argument('--debug', action='store_true', help='whether output debug messages and retain temporary files or not')
+    parser.add_argument('--filter-subdirs', type=str, default='', help='Comma-separated list of subdirectories to include (e.g., "bldg,brid"). Only used when scanning directories.')
     args = parser.parse_args()
     logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO)
     main(
@@ -168,5 +170,6 @@ if __name__ == '__main__':
         extrude=args.extrude,
         interpolate=args.interpolate,
         merge=args.merge,
-        debug=args.debug
+        debug=args.debug,
+        filter_subdirs=args.filter_subdirs.split(",") if args.filter_subdirs else None
     )

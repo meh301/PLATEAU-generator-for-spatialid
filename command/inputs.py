@@ -5,16 +5,12 @@ import os
 import tempfile
 import typing
 
+from typing import Any, Dict, List, Tuple, Iterator, Optional
+
 from lxml import etree
 
 import constants
 import prepare
-
-Any = typing.Any
-Dict = typing.Dict
-List = typing.List
-Tuple = typing.Tuple
-Iterator = typing.Iterator
 
 logger = logging.getLogger(__name__)
 
@@ -144,22 +140,29 @@ def load_ids(input_file: str, ids: Tuple[str] = None
             yield gml_id, spatial_id, property, max_zoom_level, merged
 
 
-def get_target_gml_files(input_dir: str) -> List[str]:
-    """find *.gml recursively
+def get_target_gml_files(input_dir: str, filter_subdirs: Optional[List[str]] = None) -> List[str]:
+    """Find *.gml recursively and filter by subdirectory names.
 
     Args:
-        input_dir (str): input directory
+        input_dir (str): Input directory
+        filter_subdirs (Optional[List[str]]): List of subdirectory names to include (e.g., ['bldg', 'brid'])
 
     Returns:
-        List[str]: input files
+        List[str]: Filtered list of GML file paths
     """
     input_pattern = os.path.join(input_dir, '**', '*.gml')
-    input_files = list(sorted(glob.glob(input_pattern, recursive=True)))
-    input_files = [
-        input_file.replace(os.path.sep, '/')
-        for input_file in input_files
-    ]
-    return input_files
+    input_files = sorted(glob.glob(input_pattern, recursive=True))
+
+    filtered_files = []
+    for input_file in input_files:
+        normalized_path = input_file.replace(os.path.sep, '/')
+        if filter_subdirs:
+            # Check if any specified subdir name is part of the path
+            if not any(f"/{sub}/" in normalized_path for sub in filter_subdirs):
+                continue
+        filtered_files.append(normalized_path)
+
+    return filtered_files
 
 
 def get_target_id_files(input_dir: str) -> List[str]:
